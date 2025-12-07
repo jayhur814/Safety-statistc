@@ -868,12 +868,13 @@
                             return;
                         }
                         
-                        // 새 데이터 추가
+                        // 새 데이터 추가 (put을 사용하여 기존 레코드 덮어쓰기)
                         let completed = 0;
                         let failed = false;
                         
                         records.forEach((record) => {
-                            const request = objectStore.add(record);
+                            // put을 사용하여 기존 레코드가 있으면 덮어쓰기
+                            const request = objectStore.put(record);
                             request.onsuccess = () => {
                                 completed++;
                                 if (completed === records.length && !failed) {
@@ -1316,10 +1317,23 @@
                     );
 
                     const originalRecords = [...records];
+                    let recordsToSave = [];
+                    
                     if (option) {
-                        records = records.concat(backupRecords);
+                        // 기존 기록에 추가 - ID 중복 처리
+                        const existingIds = new Set(records.map(r => r.id));
+                        recordsToSave = [...records];
+                        
+                        backupRecords.forEach(record => {
+                            if (existingIds.has(record.id)) {
+                                // ID가 중복되면 새로운 ID 생성
+                                record.id = Date.now() + Math.random();
+                            }
+                            recordsToSave.push(record);
+                        });
                     } else {
-                        records = backupRecords;
+                        // 기존 기록 덮어쓰기
+                        recordsToSave = backupRecords;
                     }
 
                     try {
@@ -1327,6 +1341,11 @@
                         if (!db) {
                             await openDB();
                         }
+                        
+                        // records 배열을 임시로 저장할 데이터로 교체
+                        const tempRecords = records;
+                        records = recordsToSave;
+                        
                         await saveAllRecords();
                         await loadRecords();
                         renderRecords();
