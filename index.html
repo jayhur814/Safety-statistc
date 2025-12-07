@@ -718,11 +718,222 @@
             weekday: 'long'
         });
 
-        // 로컬 스토리지에서 데이터 로드
-        let records = JSON.parse(localStorage.getItem('inspectionRecords') || '[]');
+        // IndexedDB 초기화
+        const dbName = 'SafetyManagementDB';
+        const storeName = 'inspectionRecords';
+        let db;
+        let records = [];
+
+        // IndexedDB 연결
+        const openDB = () => {
+            return new Promise((resolve, reject) => {
+                // 버전 2로 설정 (기존 데이터베이스와 호환)
+                const request = indexedDB.open(dbName, 2);
+                
+                request.onerror = () => reject(request.error);
+                request.onsuccess = () => {
+                    db = request.result;
+                    resolve(db);
+                };
+                
+                request.onupgradeneeded = (e) => {
+                    const newDb = e.target.result;
+                    const transaction = e.target.transaction;
+                    
+                    // 기존 objectStore가 없으면 생성
+                    if (!newDb.objectStoreNames.contains(storeName)) {
+                        newDb.createObjectStore(storeName, { keyPath: 'id' });
+                    }
+                    
+                    // 버전 2에서 photos 저장소가 필요한 경우 (향후 확장용)
+                    if (!newDb.objectStoreNames.contains('photos')) {
+                        // 필요시 주석 해제
+                        // newDb.createObjectStore('photos', { keyPath: 'id', autoIncrement: true });
+                    }
+                };
+                
+                request.onblocked = () => {
+                    console.warn('데이터베이스 업그레이드가 차단되었습니다. 다른 탭을 닫아주세요.');
+                };
+            });
+        };
+
+        // IndexedDB에서 데이터 로드
+        const loadRecords = async () => {
+            return new Promise(async (resolve) => {
+                if (!db) {
+                    try {
+                        await openDB();
+                    } catch (error) {
+                        console.error('데이터베이스 초기화 실패:', error);
+                        records = [];
+                        resolve([]);
+                        return;
+                    }
+                }
+                
+                try {
+                    const transaction = db.transaction(storeName, 'readonly');
+                    const objectStore = transaction.objectStore(storeName);
+                    const request = objectStore.getAll();
+                    
+                    request.onsuccess = () => {
+                        records = request.result || [];
+                        resolve(records);
+                    };
+                    request.onerror = () => {
+                        records = [];
+                        resolve([]);
+                    };
+                } catch (error) {
+                    console.error('데이터 로드 오류:', error);
+                    records = [];
+                    resolve([]);
+                }
+            });
+        };
+
+        // IndexedDB에 데이터 저장
+        const saveRecord = async (record) => {
+            return new Promise(async (resolve, reject) => {
+                if (!db) {
+                    try {
+                        await openDB();
+                    } catch (error) {
+                        reject(new Error('데이터베이스 초기화 실패: ' + error.message));
+                        return;
+                    }
+                }
+                
+                try {
+                    const transaction = db.transaction(storeName, 'readwrite');
+                    const objectStore = transaction.objectStore(storeName);
+                    const request = objectStore.put(record);
+                    
+                    request.onerror = () => reject(request.error);
+                    request.onsuccess = () => resolve(record);
+                } catch (error) {
+                    reject(error);
+                }
+            });
+        };
+
+        // IndexedDB에서 데이터 삭제
+        const deleteRecordFromDB = async (id) => {
+            return new Promise(async (resolve, reject) => {
+                if (!db) {
+                    try {
+                        await openDB();
+                    } catch (error) {
+                        reject(new Error('데이터베이스 초기화 실패: ' + error.message));
+                        return;
+                    }
+                }
+                
+                try {
+                    const transaction = db.transaction(storeName, 'readwrite');
+                    const objectStore = transaction.objectStore(storeName);
+                    const request = objectStore.delete(id);
+                    
+                    request.onerror = () => reject(request.error);
+                    request.onsuccess = () => resolve();
+                } catch (error) {
+                    reject(error);
+                }
+            });
+        };
+
+        // 모든 기록을 IndexedDB에 저장 (백업 복구용)
+        const saveAllRecords = async () => {
+            return new Promise(async (resolve, reject) => {
+                if (!db) {
+                    try {
+                        await openDB();
+                    } catch (error) {
+                        reject(new Error('데이터베이스 초기화 실패: ' + error.message));
+                        return;
+                    }
+                }
+                
+                try {
+                    const transaction = db.transaction(storeName, 'readwrite');
+                    const objectStore = transaction.objectStore(storeName);
+                    
+                    // 기존 데이터 모두 삭제 후 새 데이터 추가
+                    const clearRequest = objectStore.clear();
+                    
+                    clearRequest.onsuccess = () => {
+                        if (records.length === 0) {
+                            resolve();
+                            return;
+                        }
+                        
+                        // 새 데이터 추가
+                        let completed = 0;
+                        let failed = false;
+                        
+                        records.forEach((record) => {
+                            const request = objectStore.add(record);
+                            request.onsuccess = () => {
+                                completed++;
+                                if (completed === records.length && !failed) {
+                                    resolve();
+                                }
+                            };
+                            request.onerror = () => {
+                                if (!failed) {
+                                    failed = true;
+                                    reject(request.error);
+                                }
+                            };
+                        });
+                    };
+                    
+                    clearRequest.onerror = () => {
+                        reject(clearRequest.error);
+                    };
+                } catch (error) {
+                    reject(error);
+                }
+            });
+        };
+
+        // localStorage에서 IndexedDB로 마이그레이션
+        const migrateFromLocalStorage = async () => {
+            try {
+                const oldData = localStorage.getItem('inspectionRecords');
+                if (oldData) {
+                    const oldRecords = JSON.parse(oldData);
+                    if (oldRecords && oldRecords.length > 0) {
+                        // IndexedDB에 저장
+                        for (const record of oldRecords) {
+                            await saveRecord(record);
+                        }
+                        // localStorage 데이터 삭제 (선택사항)
+                        // localStorage.removeItem('inspectionRecords');
+                        console.log('기존 데이터를 IndexedDB로 마이그레이션했습니다:', oldRecords.length, '건');
+                    }
+                }
+            } catch (error) {
+                console.error('마이그레이션 오류:', error);
+            }
+        };
+
+        // 초기화
+        (async () => {
+            try {
+                await openDB();
+                await migrateFromLocalStorage();
+                await loadRecords();
+                console.log('데이터 로드 완료:', records.length, '건');
+            } catch (error) {
+                console.error('초기화 오류:', error);
+                alert('데이터베이스 초기화 중 오류가 발생했습니다. 페이지를 새로고침해주세요.');
+            }
+        })();
 
         // 탭 전환 함수
-        function switchTab(event, tabName) {
+        async function switchTab(event, tabName) {
             event.preventDefault();
             
             document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
@@ -732,8 +943,10 @@
             event.target.classList.add('active');
 
             if (tabName === 'records') {
+                await loadRecords();
                 renderRecords();
             } else if (tabName === 'statistics') {
+                await loadRecords();
                 renderStatistics();
             }
         }
@@ -804,7 +1017,7 @@
         }
 
         // 폼 제출
-        document.getElementById('inspectionForm').addEventListener('submit', function(e) {
+        document.getElementById('inspectionForm').addEventListener('submit', async function(e) {
             e.preventDefault();
 
             const category = document.getElementById('selectedCategory').value;
@@ -827,15 +1040,21 @@
             };
 
             records.push(record);
-            localStorage.setItem('inspectionRecords', JSON.stringify(records));
-
-            alert('지적사항이 저장되었습니다!');
-            this.reset();
-            currentPhotos = [];
-            photoPreview.innerHTML = '';
-            document.querySelectorAll('.category-btn').forEach(b => b.classList.remove('selected'));
-            document.getElementById('selectedCategory').value = '';
-            document.getElementById('inspectionDate').valueAsDate = new Date();
+            
+            try {
+                await saveRecord(record);
+                alert('지적사항이 저장되었습니다! (총 ' + records.length + '건)');
+                this.reset();
+                currentPhotos = [];
+                photoPreview.innerHTML = '';
+                document.querySelectorAll('.category-btn').forEach(b => b.classList.remove('selected'));
+                document.getElementById('selectedCategory').value = '';
+                document.getElementById('inspectionDate').valueAsDate = new Date();
+            } catch (error) {
+                // 저장 실패 시 배열에서 제거
+                records.pop();
+                alert('저장 중 오류가 발생했습니다: ' + error.message);
+            }
         });
 
         function renderRecords() {
@@ -913,11 +1132,19 @@
             document.getElementById('companyStats').innerHTML = companyStatsHtml || '<tr><td colspan="5" style="text-align: center; color: #999;">데이터 없음</td></tr>';
         }
 
-        function deleteRecord(id) {
+        async function deleteRecord(id) {
             if (confirm('이 기록을 삭제하시겠습니까?')) {
+                const originalRecords = [...records];
                 records = records.filter(r => r.id !== id);
-                localStorage.setItem('inspectionRecords', JSON.stringify(records));
-                renderRecords();
+                
+                try {
+                    await deleteRecordFromDB(id);
+                    renderRecords();
+                } catch (error) {
+                    // 복구
+                    records = originalRecords;
+                    alert('삭제 중 오류가 발생했습니다: ' + error.message);
+                }
             }
         }
 
@@ -965,14 +1192,22 @@
             currentEditPhotos = [];
         }
 
-        function saveEditPhotos() {
+        async function saveEditPhotos() {
             const record = records.find(r => r.id === editingRecordId);
             if (record) {
+                const originalPhotos = [...record.photos];
                 record.photos = currentEditPhotos;
-                localStorage.setItem('inspectionRecords', JSON.stringify(records));
-                alert('사진이 수정되었습니다!');
-                closeEditPhotoModal();
-                renderRecords();
+                
+                try {
+                    await saveRecord(record);
+                    alert('사진이 수정되었습니다!');
+                    closeEditPhotoModal();
+                    renderRecords();
+                } catch (error) {
+                    // 복구
+                    record.photos = originalPhotos;
+                    alert('저장 중 오류가 발생했습니다: ' + error.message);
+                }
             }
         }
 
@@ -1049,12 +1284,23 @@
         }
 
         // 백업 복구
-        function restoreBackup(event) {
+        async function restoreBackup(event) {
             const file = event.target.files[0];
             if (!file) return;
 
+            // 데이터베이스가 준비될 때까지 대기
+            if (!db) {
+                try {
+                    await openDB();
+                } catch (error) {
+                    alert('데이터베이스 초기화 중 오류가 발생했습니다: ' + error.message);
+                    event.target.value = '';
+                    return;
+                }
+            }
+
             const reader = new FileReader();
-            reader.onload = function(e) {
+            reader.onload = async function(e) {
                 try {
                     const backup = JSON.parse(e.target.result);
                     const backupRecords = backup.records || backup;
@@ -1069,16 +1315,28 @@
                         `선택:\n[확인] 기존 기록에 추가\n[취소] 기존 기록 덮어쓰기`
                     );
 
+                    const originalRecords = [...records];
                     if (option) {
                         records = records.concat(backupRecords);
                     } else {
                         records = backupRecords;
                     }
 
-                    localStorage.setItem('inspectionRecords', JSON.stringify(records));
-                    renderRecords();
-                    renderStatistics();
-                    alert('백업 복구가 완료되었습니다!');
+                    try {
+                        // 데이터베이스가 준비되었는지 다시 확인
+                        if (!db) {
+                            await openDB();
+                        }
+                        await saveAllRecords();
+                        await loadRecords();
+                        renderRecords();
+                        renderStatistics();
+                        alert('백업 복구가 완료되었습니다!');
+                    } catch (error) {
+                        // 복구
+                        records = originalRecords;
+                        alert('복구 중 오류가 발생했습니다: ' + error.message);
+                    }
                 } catch (error) {
                     alert('백업 파일을 읽는 중 오류가 발생했습니다: ' + error.message);
                 }
