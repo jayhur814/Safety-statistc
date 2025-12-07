@@ -592,7 +592,36 @@
                 <div style="margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
                     <button class="btn btn-primary" onclick="downloadBackup()">📥 백업 다운로드</button>
                     <button class="btn btn-secondary" onclick="document.getElementById('restoreInput').click()">📤 백업 복구</button>
+                    <button class="btn btn-primary" onclick="saveToGitHub()">☁️ GitHub에 저장</button>
                     <input type="file" id="restoreInput" accept=".json" style="display: none;" onchange="restoreBackup(event)">
+                </div>
+                
+                <!-- GitHub 자동 저장 설정 -->
+                <div class="form-section" style="margin-top: 20px; background-color: #f9f9f9; border: 1px solid var(--color-border);">
+                    <h3 style="margin-bottom: 15px;">☁️ GitHub 자동 저장 설정</h3>
+                    <div class="form-group">
+                        <label for="githubToken">GitHub Personal Access Token *</label>
+                        <input type="password" id="githubToken" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" style="margin-bottom: 10px;">
+                        <p style="font-size: 12px; color: #666; margin-top: 5px;">
+                            GitHub → Settings → Developer settings → Personal access tokens → Generate new token (gist 권한 필요)
+                        </p>
+                    </div>
+                    <div class="form-group">
+                        <label for="autoSaveInterval">자동 저장 간격 (분)</label>
+                        <select id="autoSaveInterval" style="width: 200px;">
+                            <option value="0">자동 저장 안함</option>
+                            <option value="1">1분</option>
+                            <option value="5" selected>5분</option>
+                            <option value="10">10분</option>
+                            <option value="30">30분</option>
+                            <option value="60">1시간</option>
+                        </select>
+                    </div>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <button class="btn btn-primary" onclick="saveGitHubSettings()">💾 설정 저장</button>
+                        <span id="lastSaveTime" style="font-size: 12px; color: #666; margin-left: 10px;"></span>
+                    </div>
+                    <div id="githubStatus" style="margin-top: 10px; font-size: 12px;"></div>
                 </div>
                 <div class="table-wrapper">
                     <table class="records-table" id="recordsTable">
@@ -927,6 +956,11 @@
                 await migrateFromLocalStorage();
                 await loadRecords();
                 console.log('데이터 로드 완료:', records.length, '건');
+                
+                // GitHub 설정 로드
+                setTimeout(() => {
+                    loadGitHubSettings();
+                }, 500);
             } catch (error) {
                 console.error('초기화 오류:', error);
                 alert('데이터베이스 초기화 중 오류가 발생했습니다. 페이지를 새로고침해주세요.');
@@ -1045,6 +1079,10 @@
             try {
                 await saveRecord(record);
                 alert('지적사항이 저장되었습니다! (총 ' + records.length + '건)');
+                
+                // 자동 저장: GitHub에 저장 (설정되어 있는 경우)
+                autoSaveToGitHub();
+                
                 this.reset();
                 currentPhotos = [];
                 photoPreview.innerHTML = '';
@@ -1141,6 +1179,9 @@
                 try {
                     await deleteRecordFromDB(id);
                     renderRecords();
+                    
+                    // 자동 저장: GitHub에 저장
+                    autoSaveToGitHub();
                 } catch (error) {
                     // 복구
                     records = originalRecords;
@@ -1204,6 +1245,9 @@
                     alert('사진이 수정되었습니다!');
                     closeEditPhotoModal();
                     renderRecords();
+                    
+                    // 자동 저장: GitHub에 저장
+                    autoSaveToGitHub();
                 } catch (error) {
                     // 복구
                     record.photos = originalPhotos;
@@ -1364,6 +1408,202 @@
             
             event.target.value = '';
         }
+
+        // GitHub 자동 저장 기능
+        let githubToken = localStorage.getItem('githubToken') || '';
+        let autoSaveInterval = parseInt(localStorage.getItem('autoSaveInterval') || '5');
+        let autoSaveTimer = null;
+        let githubGistId = localStorage.getItem('githubGistId') || '';
+
+        // GitHub 설정 로드
+        function loadGitHubSettings() {
+            if (document.getElementById('githubToken')) {
+                document.getElementById('githubToken').value = githubToken;
+                document.getElementById('autoSaveInterval').value = autoSaveInterval;
+                updateLastSaveTime();
+                startAutoSave();
+            }
+        }
+
+        // GitHub 설정 저장
+        function saveGitHubSettings() {
+            githubToken = document.getElementById('githubToken').value.trim();
+            autoSaveInterval = parseInt(document.getElementById('autoSaveInterval').value);
+            
+            if (!githubToken) {
+                alert('GitHub Personal Access Token을 입력해주세요.');
+                return;
+            }
+            
+            localStorage.setItem('githubToken', githubToken);
+            localStorage.setItem('autoSaveInterval', autoSaveInterval);
+            
+            startAutoSave();
+            updateGitHubStatus('설정이 저장되었습니다.', 'success');
+        }
+
+        // 자동 저장 시작
+        function startAutoSave() {
+            // 기존 타이머 정리
+            if (autoSaveTimer) {
+                clearInterval(autoSaveTimer);
+                autoSaveTimer = null;
+            }
+            
+            // 자동 저장 간격이 0이면 자동 저장 안함
+            if (autoSaveInterval === 0 || !githubToken) {
+                return;
+            }
+            
+            // 자동 저장 시작
+            autoSaveTimer = setInterval(() => {
+                autoSaveToGitHub();
+            }, autoSaveInterval * 60 * 1000);
+            
+            updateGitHubStatus(`자동 저장이 활성화되었습니다. (${autoSaveInterval}분마다)`, 'success');
+        }
+
+        // GitHub에 자동 저장
+        async function autoSaveToGitHub() {
+            if (!githubToken) {
+                return;
+            }
+            
+            try {
+                await saveToGitHub(true); // 자동 저장 모드
+            } catch (error) {
+                console.error('자동 저장 실패:', error);
+                updateGitHubStatus('자동 저장 실패: ' + error.message, 'error');
+            }
+        }
+
+        // GitHub Gist에 저장
+        async function saveToGitHub(isAutoSave = false) {
+            if (!githubToken) {
+                alert('GitHub Personal Access Token을 먼저 설정해주세요.');
+                return;
+            }
+            
+            const statusEl = document.getElementById('githubStatus');
+            if (statusEl) {
+                statusEl.textContent = 'GitHub에 저장 중...';
+                statusEl.style.color = '#0088cc';
+            }
+            
+            try {
+                // 백업 데이터 생성
+                const backup = {
+                    exportDate: new Date().toLocaleString('ko-KR'),
+                    totalRecords: records.length,
+                    records: records
+                };
+                
+                const dataStr = JSON.stringify(backup, null, 2);
+                const fileName = `안전지적사항_백업_${new Date().toISOString().split('T')[0]}.json`;
+                
+                // Gist 데이터 준비
+                const gistData = {
+                    description: `안전 지적사항 관리 시스템 백업 - ${new Date().toLocaleString('ko-KR')}`,
+                    public: false,
+                    files: {
+                        [fileName]: {
+                            content: dataStr
+                        }
+                    }
+                };
+                
+                let response;
+                
+                if (githubGistId) {
+                    // 기존 Gist 업데이트
+                    response = await fetch(`https://api.github.com/gists/${githubGistId}`, {
+                        method: 'PATCH',
+                        headers: {
+                            'Authorization': `token ${githubToken}`,
+                            'Accept': 'application/vnd.github.v3+json',
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(gistData)
+                    });
+                } else {
+                    // 새 Gist 생성
+                    response = await fetch('https://api.github.com/gists', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `token ${githubToken}`,
+                            'Accept': 'application/vnd.github.v3+json',
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(gistData)
+                    });
+                }
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.message || 'GitHub 저장 실패');
+                }
+                
+                const result = await response.json();
+                githubGistId = result.id;
+                localStorage.setItem('githubGistId', githubGistId);
+                
+                updateLastSaveTime();
+                
+                if (statusEl) {
+                    if (isAutoSave) {
+                        statusEl.textContent = `자동 저장 완료: ${new Date().toLocaleTimeString('ko-KR')}`;
+                    } else {
+                        statusEl.textContent = 'GitHub에 저장되었습니다!';
+                    }
+                    statusEl.style.color = '#00aa44';
+                }
+                
+                if (!isAutoSave) {
+                    alert('GitHub에 저장되었습니다!');
+                }
+                
+            } catch (error) {
+                console.error('GitHub 저장 오류:', error);
+                
+                if (statusEl) {
+                    statusEl.textContent = '저장 실패: ' + error.message;
+                    statusEl.style.color = '#cc3333';
+                }
+                
+                if (!isAutoSave) {
+                    alert('GitHub 저장 실패: ' + error.message);
+                }
+                
+                throw error;
+            }
+        }
+
+        // 마지막 저장 시간 업데이트
+        function updateLastSaveTime() {
+            const lastSave = localStorage.getItem('lastGitHubSave');
+            const lastSaveTimeEl = document.getElementById('lastSaveTime');
+            
+            if (lastSaveTimeEl) {
+                if (lastSave) {
+                    const lastSaveDate = new Date(lastSave);
+                    lastSaveTimeEl.textContent = `마지막 저장: ${lastSaveDate.toLocaleString('ko-KR')}`;
+                } else {
+                    lastSaveTimeEl.textContent = '저장 이력 없음';
+                }
+            }
+            
+            localStorage.setItem('lastGitHubSave', new Date().toISOString());
+        }
+
+        // GitHub 상태 업데이트
+        function updateGitHubStatus(message, type = 'info') {
+            const statusEl = document.getElementById('githubStatus');
+            if (statusEl) {
+                statusEl.textContent = message;
+                statusEl.style.color = type === 'success' ? '#00aa44' : type === 'error' ? '#cc3333' : '#0088cc';
+            }
+        }
+
     </script>
 </body>
 </html>
