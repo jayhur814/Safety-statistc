@@ -299,6 +299,19 @@
             cursor: pointer;
         }
 
+        .editable-company {
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+            display: inline-block;
+            min-width: 100px;
+            transition: background-color 0.2s ease;
+        }
+
+        .editable-company:hover {
+            background-color: #f0f0f0;
+        }
+
         .severity-badge {
             display: inline-block;
             padding: 6px 12px;
@@ -1117,7 +1130,15 @@
             tbody.innerHTML = records.map(record => `
                 <tr>
                     <td>${record.date}</td>
-                    <td>${record.company}</td>
+                    <td>
+                        <span class="editable-company" data-id="${record.id}" style="cursor: pointer; padding: 4px 8px; border-radius: 4px; display: inline-block; min-width: 100px;" 
+                              onmouseover="this.style.backgroundColor='#f0f0f0'" 
+                              onmouseout="this.style.backgroundColor='transparent'"
+                              onclick="editCompanyName(${record.id}, '${record.company.replace(/'/g, "\\'")}')"
+                              title="클릭하여 업체명 수정">
+                            ${record.company}
+                        </span>
+                    </td>
                     <td><strong>${record.category}</strong></td>
                     <td>${record.reason}</td>
                     <td><span class="severity-badge severity-${record.severity === '높음' ? 'high' : record.severity === '중간' ? 'medium' : 'low'}">${record.severity}</span></td>
@@ -1185,6 +1206,103 @@
                 `;
             }).join('');
             document.getElementById('companyStats').innerHTML = companyStatsHtml || '<tr><td colspan="5" style="text-align: center; color: #999;">데이터 없음</td></tr>';
+        }
+
+        // 업체명 편집 함수
+        function editCompanyName(id, currentName) {
+            const record = records.find(r => r.id === id);
+            if (!record) return;
+
+            // 편집 중인 요소 찾기
+            const clickedElement = event.target || window.event.target;
+            const companyCell = clickedElement.closest('td');
+            if (!companyCell) return;
+
+            // 입력 필드 생성
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.value = currentName;
+            input.style.cssText = 'width: 100%; padding: 4px 8px; border: 2px solid var(--color-primary); border-radius: 4px; font-size: 14px;';
+            input.style.minWidth = '150px';
+
+            // 저장 버튼
+            const saveBtn = document.createElement('button');
+            saveBtn.textContent = '✓';
+            saveBtn.className = 'btn btn-primary';
+            saveBtn.style.cssText = 'padding: 4px 8px; font-size: 12px; margin-left: 5px;';
+            saveBtn.title = '저장';
+
+            // 취소 버튼
+            const cancelBtn = document.createElement('button');
+            cancelBtn.textContent = '✕';
+            cancelBtn.className = 'btn btn-secondary';
+            cancelBtn.style.cssText = 'padding: 4px 8px; font-size: 12px; margin-left: 3px;';
+            cancelBtn.title = '취소';
+
+            // 컨테이너 생성
+            const container = document.createElement('div');
+            container.style.cssText = 'display: flex; align-items: center;';
+            container.appendChild(input);
+            container.appendChild(saveBtn);
+            container.appendChild(cancelBtn);
+
+            // 셀 내용 교체
+            companyCell.innerHTML = '';
+            companyCell.appendChild(container);
+
+            // 입력 필드에 포커스
+            input.focus();
+            input.select();
+
+            // 저장 함수
+            const saveCompanyName = async () => {
+                const newName = normalizeCompanyName(input.value.trim());
+                if (!newName) {
+                    alert('업체명을 입력해주세요.');
+                    input.focus();
+                    return;
+                }
+
+                if (newName === record.company) {
+                    // 변경사항 없음
+                    renderRecords();
+                    return;
+                }
+
+                const originalName = record.company;
+                record.company = newName;
+
+                try {
+                    await saveRecord(record);
+                    renderRecords();
+                    
+                    // 자동 저장: GitHub에 저장
+                    autoSaveToGitHub();
+                } catch (error) {
+                    // 복구
+                    record.company = originalName;
+                    alert('저장 중 오류가 발생했습니다: ' + error.message);
+                    renderRecords();
+                }
+            };
+
+            // 취소 함수
+            const cancelEdit = () => {
+                renderRecords();
+            };
+
+            // 이벤트 리스너
+            saveBtn.addEventListener('click', saveCompanyName);
+            cancelBtn.addEventListener('click', cancelEdit);
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    saveCompanyName();
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    cancelEdit();
+                }
+            });
         }
 
         async function deleteRecord(id) {
