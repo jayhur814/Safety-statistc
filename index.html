@@ -1420,6 +1420,8 @@
             if (document.getElementById('githubToken')) {
                 document.getElementById('githubToken').value = githubToken;
                 document.getElementById('autoSaveInterval').value = autoSaveInterval;
+                // githubGistId도 localStorage에서 로드
+                githubGistId = localStorage.getItem('githubGistId') || '';
                 updateLastSaveTime();
                 startAutoSave();
             }
@@ -1519,7 +1521,7 @@
                     response = await fetch(`https://api.github.com/gists/${githubGistId}`, {
                         method: 'PATCH',
                         headers: {
-                            'Authorization': `token ${githubToken}`,
+                            'Authorization': `Bearer ${githubToken}`,
                             'Accept': 'application/vnd.github.v3+json',
                             'Content-Type': 'application/json'
                         },
@@ -1530,7 +1532,7 @@
                     response = await fetch('https://api.github.com/gists', {
                         method: 'POST',
                         headers: {
-                            'Authorization': `token ${githubToken}`,
+                            'Authorization': `Bearer ${githubToken}`,
                             'Accept': 'application/vnd.github.v3+json',
                             'Content-Type': 'application/json'
                         },
