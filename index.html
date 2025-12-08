@@ -606,6 +606,7 @@
                     <button class="btn btn-primary" onclick="downloadBackup()">📥 백업 다운로드</button>
                     <button class="btn btn-secondary" onclick="document.getElementById('restoreInput').click()">📤 백업 복구</button>
                     <button class="btn btn-primary" onclick="saveToGitHub()">☁️ GitHub에 저장</button>
+                    <button class="btn btn-secondary" onclick="exportRecordsCSV()">📄 기록 CSV 다운로드</button>
                     <input type="file" id="restoreInput" accept=".json" style="display: none;" onchange="restoreBackup(event)">
                 </div>
                 
@@ -691,6 +692,9 @@
 
             <div class="form-section">
                 <h2>항목별 통계</h2>
+                <div style="margin-bottom: 12px; display: flex; gap: 10px; flex-wrap: wrap;">
+                    <button class="btn btn-secondary" onclick="exportStatisticsCSV()">📄 통계 CSV 다운로드</button>
+                </div>
                 <table class="records-table">
                     <thead>
                         <tr>
@@ -1738,6 +1742,120 @@
                 statusEl.textContent = message;
                 statusEl.style.color = type === 'success' ? '#00aa44' : type === 'error' ? '#cc3333' : '#0088cc';
             }
+        }
+
+        // 공용 CSV 다운로드 헬퍼
+        function downloadCSV(filename, rows) {
+            if (!rows || rows.length === 0) {
+                alert('내보낼 데이터가 없습니다.');
+                return;
+            }
+
+            const escapeCell = (cell) => {
+                const value = (cell ?? '').toString().replace(/"/g, '""');
+                // 쉼표/줄바꿈/따옴표가 있으면 큰따옴표로 감싸기
+                if (/[",\n]/.test(value)) {
+                    return `"${value}"`;
+                }
+                return value;
+            };
+
+            const csvContent = rows.map(row => row.map(escapeCell).join(',')).join('\n');
+            // UTF-8 BOM 추가 (엑셀에서 한글 깨짐 방지)
+            const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        }
+
+        // 기록 CSV 내보내기
+        function exportRecordsCSV() {
+            if (!records || records.length === 0) {
+                alert('기록이 없습니다.');
+                return;
+            }
+
+            const headers = ['날짜', '업체명', '지적항목', '지적사유', '심각도', '상태', '조치일자', '비고', '사진여부'];
+            const rows = [headers];
+            records.forEach(r => {
+                rows.push([
+                    r.date || '',
+                    r.company || '',
+                    r.category || '',
+                    r.reason || '',
+                    r.severity || '',
+                    r.status || '',
+                    r.actionDate || '',
+                    r.notes || '',
+                    (r.photos && r.photos.length > 0) ? '있음' : '없음'
+                ]);
+            });
+
+            downloadCSV(`안전지적사항_기록_${new Date().toISOString().split('T')[0]}.csv`, rows);
+        }
+
+        // 통계 CSV 내보내기
+        function exportStatisticsCSV() {
+            const total = records.length;
+            if (total === 0) {
+                alert('기록이 없습니다.');
+                return;
+            }
+
+            // 요약
+            const summary = [
+                ['전체 건수', total],
+                ['높음', records.filter(r => r.severity === '높음').length],
+                ['중간', records.filter(r => r.severity === '중간').length],
+                ['낮음', records.filter(r => r.severity === '낮음').length],
+                ['조치완료', records.filter(r => r.status === '조치완료').length],
+                ['미조치', records.filter(r => r.status === '미조치').length],
+            ];
+
+            // 항목별 통계
+            const categoryCounts = {};
+            records.forEach(r => {
+                categoryCounts[r.category] = (categoryCounts[r.category] || 0) + 1;
+            });
+            const categoryRows = [['지적항목', '건수', '비율(%)']];
+            Object.entries(categoryCounts).forEach(([category, count]) => {
+                const percentage = ((count / total) * 100).toFixed(1);
+                categoryRows.push([category, count, percentage]);
+            });
+
+            // 업체별 통계 (정규화 사용)
+            const companyCounts = {};
+            const companyNameMap = {};
+            records.forEach(r => {
+                const normalizedName = normalizeCompanyName(r.company);
+                const originalName = r.company || '';
+                if (!companyCounts[normalizedName]) {
+                    companyCounts[normalizedName] = { total: 0, completed: 0, pending: 0 };
+                    companyNameMap[normalizedName] = originalName.trim() || normalizedName;
+                }
+                companyCounts[normalizedName].total++;
+                if (r.status === '조치완료') companyCounts[normalizedName].completed++;
+                if (r.status === '미조치') companyCounts[normalizedName].pending++;
+            });
+            const companyRows = [['업체명', '지적건수', '조치완료', '미조치', '완료율(%)']];
+            Object.entries(companyCounts).forEach(([normalized, stats]) => {
+                const rate = stats.total > 0 ? ((stats.completed / stats.total) * 100).toFixed(1) : '0';
+                const display = companyNameMap[normalized] || normalized;
+                companyRows.push([display, stats.total, stats.completed, stats.pending, rate]);
+            });
+
+            // CSV 구성 (섹션별로 빈 줄 추가)
+            const rows = [];
+            rows.push(['요약']); rows.push(...summary); rows.push([]);
+            rows.push(['항목별 통계']); rows.push(...categoryRows); rows.push([]);
+            rows.push(['업체별 통계']); rows.push(...companyRows);
+
+            downloadCSV(`안전지적사항_통계_${new Date().toISOString().split('T')[0]}.csv`, rows);
         }
 
     </script>
